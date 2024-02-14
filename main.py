@@ -3,7 +3,7 @@ import sys
 from collections import defaultdict
 
 import numpy as np
-import pandas
+import pandas as pd
 import cv2
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QScrollArea
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -29,8 +29,35 @@ class PoseCanvas(FigureCanvas):
         return self.min <= frame_index <= self.max
 
 
+def moving_average_rotation(angles, window_size=5):
+    smoothed_angles = []
+
+    for i in range(len(angles)):
+        # Extract the relevant window of angles
+        window = angles[max(0, i - window_size + 1):i + 1]
+
+        # Convert angles to unit vectors
+        unit_vectors = np.array([[np.cos(angle), np.sin(angle)] for angle in window])
+
+        # Compute the average vector
+        average_vector = np.mean(unit_vectors, axis=0)
+
+        # Convert the average vector back to an angle
+        average_angle = np.arctan2(average_vector[1], average_vector[0])
+
+        smoothed_angles.append(average_angle)
+
+    return np.array(smoothed_angles)
+
+
+def moving_average(group, window_size):
+    return group.rolling(window=window_size, min_periods=1).mean()
+
+
 class RotationCanvas(PoseCanvas):
     def __init__(self, data, player_key, current_frame, parent=None):
+        # smoothed_rot = moving_average_rotation(data.orientation.to_numpy(), window_size=20)
+        # data.loc[:, 'orientation'] = smoothed_rot
         super().__init__(data, player_key, parent)
         self.red_bar = self.ax.axvline(x=current_frame, color='red', linewidth=2)
 
@@ -90,9 +117,22 @@ class AppWindow(QMainWindow):
 
 
 class VideoPlayer:
-    def __init__(self, video_path, annotations):
+    def __init__(self, video_path, annotations, window_size=8, default_threshold=0.28):
         self.video_path = video_path
-        self.annotations = pandas.read_csv(annotations)
+        self.annotations = pd.read_csv(annotations)
+
+        self.annotations['orientation'] = self.annotations.groupby('PlayerKey')['orientation'].transform(
+            lambda x: moving_average_rotation(x.to_numpy(), window_size)
+        )
+
+        exclude_words = ['Unnamed', 'FrameNo', 'orientation', 'score']
+        columns_to_avg = [col for col in self.annotations.columns
+                          if not any(word in col for word in exclude_words) and col != 'PlayerKey']
+
+        for column in columns_to_avg:
+            self.annotations[column] = self.annotations.groupby('PlayerKey')[column].transform(
+                lambda x: moving_average(x, window_size)
+            )
 
         self.gui = AppWindow()
         self.gui.show()
@@ -100,7 +140,7 @@ class VideoPlayer:
         self.players = {}
 
         self.cap = cv2.VideoCapture(self.video_path)
-        self.threshold = 0.5
+        self.threshold = default_threshold
 
         self.video_length = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cv2.namedWindow('Frame', cv2.WINDOW_GUI_EXPANDED)
