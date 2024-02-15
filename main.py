@@ -8,6 +8,7 @@ import cv2
 from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QScrollArea
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib import pyplot as plt
+from mplcursors import cursor
 
 skeleton = ([0, 2], [9, 8], [8, 6], [9, 1], [4, 5], [9, 0], [2, 3], [1, 4], [8, 7])
 
@@ -15,10 +16,13 @@ skeleton = ([0, 2], [9, 8], [8, 6], [9, 1], [4, 5], [9, 0], [2, 3], [1, 4], [8, 
 class PoseCanvas(FigureCanvas):
     def __init__(self, data, player_key, parent=None):
         self.fig, self.ax = plt.subplots()
+        cursor(hover=True)
         super().__init__(self.fig)
 
         self.setParent(parent)
         self.setParent(parent)
+
+        self.ax.set_ylim([-np.pi, np.pi])
 
         self.data = data
         self.fig.suptitle(f'Player {player_key}', fontsize=16)
@@ -152,25 +156,31 @@ class VideoPlayer:
         self.draw = True
         self.draw_gui = True
 
+        frame_nr = 0
+
         while self.cap.isOpened():
             # Capture frame-by-frame
-            frame_nr = self.cap.get(cv2.CAP_PROP_POS_FRAMES) + 1
             if video_is_running or self.single_update:
                 self.single_update = False
                 ret, frame = self.cap.read()
+                frame_nr = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
                 if ret:
                     if self.draw:
                         frame = self.draw_overlays(frame, frame_nr)
-                    # Display the resulting frame
                     cv2.imshow('Frame', frame)
-                    # Press Q on keyboard to  exit
-            key = cv2.waitKey(25)
+            key = cv2.pollKey()
             if key & 0xFF == ord('q'):
                 break
             elif key & 0xFF == ord('d'):
                 self.draw = not self.draw
             elif key & 0xFF == ord('g'):
                 self.draw_gui = not self.draw_gui
+            elif key & 0xFF == ord('b'):
+                video_is_running = False
+                self.set_displayed_frame(frame_nr - 1)
+            elif key & 0xFF == ord('n'):
+                video_is_running = False
+                self.set_displayed_frame(frame_nr + 1)
             elif key & 0xFF == ord('p'):
                 if video_is_running:
                     cv2.setTrackbarPos('frame_nr', 'Frame', int(frame_nr))
@@ -187,6 +197,7 @@ class VideoPlayer:
 
     def set_displayed_frame(self, frame_nr):
         self.single_update = True
+        cv2.setTrackbarPos('frame_nr', 'Frame', int(frame_nr))
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_nr - 1)
 
     def draw_overlays(self, frame, frame_nr):
@@ -284,5 +295,5 @@ def draw_arrow(frame, rotation, origin, length=50, thickness=4, color=(255, 0, 0
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    player = VideoPlayer('/home/jfeil/IDP/raw_data/Tennis/DJI_0170.MP4',
-                         '/home/jfeil/DroneTracking/Results/run_4/pose_tracks.csv')
+    player = VideoPlayer('/home/jfeil/IDP/raw_data/Tennis/DJI_0084.MP4',
+                         '/home/jfeil/DroneTracking/Results/run_9/pose_tracks.csv')
