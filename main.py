@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 from collections import defaultdict
+from time import sleep
 
 import numpy as np
 import pandas as pd
@@ -22,7 +23,7 @@ class PoseCanvas(FigureCanvas):
         self.setParent(parent)
         self.setParent(parent)
 
-        self.ax.set_ylim([-np.pi, np.pi])
+        self.ax.set_ylim([-1.25, 1.25])
 
         self.data = data
         self.fig.suptitle(f'Player {player_key}', fontsize=16)
@@ -33,12 +34,15 @@ class PoseCanvas(FigureCanvas):
         return self.min <= frame_index <= self.max
 
 
-def moving_average_rotation(angles, window_size=5):
+def moving_average_rotation(angles, center=False, window_size=5):
     smoothed_angles = []
 
     for i in range(len(angles)):
         # Extract the relevant window of angles
-        window = angles[max(0, i - window_size + 1):i + 1]
+        if center:
+            window = angles[max(0, i - window_size // 2 + 1):i + window_size // 2 + 1]
+        else:
+            window = angles[max(0, i - window_size + 1):i + 1]
 
         # Convert angles to unit vectors
         unit_vectors = np.array([[np.cos(angle), np.sin(angle)] for angle in window])
@@ -54,23 +58,28 @@ def moving_average_rotation(angles, window_size=5):
     return np.array(smoothed_angles)
 
 
-def moving_average(group, window_size):
-    return group.rolling(window=window_size, min_periods=1).mean()
+def moving_average(group, center=True, window_size=5):
+    return group.rolling(window=window_size, min_periods=1, center=center).mean()
 
 
 class RotationCanvas(PoseCanvas):
-    def __init__(self, data, player_key, current_frame, parent=None):
+    def __init__(self, data, player_key, xlim, current_frame, parent=None):
         # smoothed_rot = moving_average_rotation(data.orientation.to_numpy(), window_size=20)
         # data.loc[:, 'orientation'] = smoothed_rot
         super().__init__(data, player_key, parent)
         self.red_bar = self.ax.axvline(x=current_frame, color='red', linewidth=2)
+        self.xlim = xlim
 
     def plot(self):
-        self.ax.plot(self.data.FrameNo.to_numpy(), self.data.orientation.to_numpy())
+        if False:
+            self.ax.plot(self.data.FrameNo.to_numpy()[0:-1], np.diff(np.cos(self.data.orientation.to_numpy())), '.-')
+        else:
+            self.ax.plot(self.data.FrameNo.to_numpy(), np.cos(self.data.orientation.to_numpy()), '.-')
         self.draw()
 
     def mark_timestamp(self, frame_index):
         self.red_bar.set_data([frame_index, frame_index], [0, 1])
+        self.ax.set_xlim([frame_index - self.xlim, frame_index + self.xlim])
         self.draw()
 
 
@@ -117,26 +126,28 @@ class AppWindow(QMainWindow):
 
     def delete_plot(self, player_key: int):
         self.scroll_layout.removeWidget(self.plot_widgets[player_key])
+        self.plot_widgets[player_key].deleteLater()
         plt.close(self.plot_widgets.pop(player_key).fig)
 
 
 class VideoPlayer:
-    def __init__(self, video_path, annotations, window_size=8, default_threshold=0.28):
+    def __init__(self, video_path, annotations, window_size=8, default_threshold=0.28, tracking=True):
         self.video_path = video_path
         self.annotations = pd.read_csv(annotations)
 
-        self.annotations['orientation'] = self.annotations.groupby('PlayerKey')['orientation'].transform(
-            lambda x: moving_average_rotation(x.to_numpy(), window_size)
-        )
-
-        exclude_words = ['Unnamed', 'FrameNo', 'orientation', 'score']
-        columns_to_avg = [col for col in self.annotations.columns
-                          if not any(word in col for word in exclude_words) and col != 'PlayerKey']
-
-        for column in columns_to_avg:
-            self.annotations[column] = self.annotations.groupby('PlayerKey')[column].transform(
-                lambda x: moving_average(x, window_size)
+        if tracking:
+            self.annotations['orientation'] = self.annotations.groupby('PlayerKey')['orientation'].transform(
+                lambda x: moving_average_rotation(x.to_numpy(), window_size=window_size)
             )
+
+            exclude_words = ['Unnamed', 'FrameNo', 'orientation', 'score']
+            columns_to_avg = [col for col in self.annotations.columns
+                              if not any(word in col for word in exclude_words) and col != 'PlayerKey']
+
+            for column in columns_to_avg:
+                self.annotations[column] = self.annotations.groupby('PlayerKey')[column].transform(
+                    lambda x: moving_average(x, window_size=window_size)
+                )
 
         self.gui = AppWindow()
         self.gui.show()
@@ -145,11 +156,15 @@ class VideoPlayer:
 
         self.cap = cv2.VideoCapture(self.video_path)
         self.threshold = default_threshold
+        self.sleep_period = 0.01
+        self.xlim = 500
 
         self.video_length = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cv2.namedWindow('Frame', cv2.WINDOW_GUI_EXPANDED)
         cv2.createTrackbar('frame_nr', 'Frame', 0, self.video_length, self.set_displayed_frame)
         cv2.createTrackbar('threshold', 'Frame', int(self.threshold * 100), 100, self.set_threshold)
+        cv2.createTrackbar('sleep', 'Frame', int(self.sleep_period * 100), 100, self.set_sleep)
+        cv2.createTrackbar('xlim', 'Frame', self.xlim, max(self.annotations.FrameNo), self.set_xlim)
         video_is_running = True
         self.single_update = False
 
@@ -164,6 +179,8 @@ class VideoPlayer:
                 self.single_update = False
                 ret, frame = self.cap.read()
                 frame_nr = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+                if self.sleep_period != 0:
+                    sleep(self.sleep_period)
                 if ret:
                     if self.draw:
                         frame = self.draw_overlays(frame, frame_nr)
@@ -194,6 +211,14 @@ class VideoPlayer:
 
     def set_threshold(self, threshold):
         self.threshold = threshold / 100
+
+    def set_sleep(self, sleep_period):
+        self.sleep_period = sleep_period / 100
+
+    def set_xlim(self, xlim):
+        self.xlim = xlim
+        for rot_can, _ in self.players.values():
+            rot_can.xlim = xlim
 
     def set_displayed_frame(self, frame_nr):
         self.single_update = True
@@ -233,7 +258,7 @@ class VideoPlayer:
                     player_data = self.annotations[self.annotations.PlayerKey == row.PlayerKey]
                     if len(player_data) < 10:
                         continue
-                    rot_canvas = RotationCanvas(player_data, player_key, int(frame_nr))
+                    rot_canvas = RotationCanvas(player_data, player_key, self.xlim, int(frame_nr))
                     rot_canvas.plot()
                     player_canvas = PlayerDisplay(player_data, player_key)
 
@@ -296,4 +321,8 @@ def draw_arrow(frame, rotation, origin, length=50, thickness=4, color=(255, 0, 0
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     player = VideoPlayer('/home/jfeil/IDP/raw_data/Tennis/DJI_0084.MP4',
-                         '/home/jfeil/DroneTracking/Results/run_9/pose_tracks.csv')
+                         '/home/jfeil/DroneTracking/Results/run_9/pose_tracks.csv',
+                         tracking=False)
+    # player = VideoPlayer('/home/jfeil/IDP/raw_data/Tennis/DJI_0170.MP4',
+    #                      '/home/jfeil/DroneTracking/Results/run_10/pose_tracks.csv',
+    #                      tracking=False)
