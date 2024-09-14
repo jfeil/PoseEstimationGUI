@@ -17,7 +17,7 @@ skeleton = ([0, 2], [9, 8], [8, 6], [9, 1], [4, 5], [9, 0], [2, 3], [1, 4], [8, 
 class PoseCanvas(FigureCanvas):
     def __init__(self, data, player_key, parent=None):
         self.fig, self.ax = plt.subplots()
-        cursor(hover=True)
+        # cursor(hover=True)
         super().__init__(self.fig)
 
         self.setParent(parent)
@@ -71,10 +71,13 @@ class RotationCanvas(PoseCanvas):
         self.xlim = xlim
 
     def plot(self):
-        if False:
-            self.ax.plot(self.data.FrameNo.to_numpy()[0:-1], np.diff(np.cos(self.data.orientation.to_numpy())), '.-')
-        else:
-            self.ax.plot(self.data.FrameNo.to_numpy(), np.cos(self.data.orientation.to_numpy()), '.-')
+        # self.ax.plot(self.data.FrameNo.to_numpy(), np.cos(self.data.orientation.to_numpy()), '.-')
+
+        rolled_average = np.diff(np.cos(self.data.orientation.to_numpy()))
+        rolled_average = np.abs(rolled_average)
+        # rolled_average = (pd.DataFrame(rolled_average).rolling(2, center=True).mean().fillna(0))
+
+        self.ax.plot(self.data.FrameNo.to_numpy()[0:-1], rolled_average, '-')
         self.draw()
 
     def mark_timestamp(self, frame_index):
@@ -131,9 +134,10 @@ class AppWindow(QMainWindow):
 
 
 class VideoPlayer:
-    def __init__(self, video_path, annotations, window_size=8, default_threshold=0.28, tracking=True):
+    def __init__(self, video_path, annotations, player_tracks, window_size=8, default_threshold=0.28, tracking=True):
         self.video_path = video_path
         self.annotations = pd.read_csv(annotations)
+        self.player_tracks = pd.read_csv(player_tracks)
 
         if tracking:
             self.annotations['orientation'] = self.annotations.groupby('PlayerKey')['orientation'].transform(
@@ -245,6 +249,7 @@ class VideoPlayer:
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
         preds = self.annotations[self.annotations.FrameNo == frame_nr]
+        player_tracks = self.player_tracks[self.player_tracks.FrameNo == frame_nr]
         for index, row in preds.iterrows():
             player_key = int(row.PlayerKey)
             pos = row.to_numpy()[4:].reshape([-1, 3])
@@ -252,6 +257,7 @@ class VideoPlayer:
                                 (int(pos.max(axis=0)[0]) + 10, int(pos.min(axis=0)[1])),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
             frame = draw_skeleton(frame, row.to_numpy(), threshold=self.threshold)
+            # frame = draw_box(frame, player_tracks.loc[index].to_numpy())
             frame = draw_arrow(frame, row.orientation, np.array([row['Hip x'], row['Hip y']]))
             if self.draw_gui:
                 if row.PlayerKey not in self.players:
@@ -303,6 +309,13 @@ def draw_skeleton(frame, pred, threshold):
     return frame
 
 
+def draw_box(frame, pred):
+    frame = cv2.rectangle(frame,
+                          (int(pred[0] - pred[2] / 2), int(pred[1] - pred[3] / 2)),
+                          (int(pred[0] + pred[2] / 2), int(pred[1] + pred[3] / 2)), (0, 0, 0), 2)
+    return frame
+
+
 def draw_arrow(frame, rotation, origin, length=50, thickness=4, color=(255, 0, 0)):
     rotation_matrix = np.array([[np.cos(rotation), -np.sin(rotation)],
                                 [np.sin(rotation), np.cos(rotation)]])
@@ -320,9 +333,11 @@ def draw_arrow(frame, rotation, origin, length=50, thickness=4, color=(255, 0, 0
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    player = VideoPlayer('/home/jfeil/IDP/raw_data/Tennis/DJI_0084.MP4',
-                         '/home/jfeil/DroneTracking/Results/run_9/pose_tracks.csv',
-                         tracking=False)
-    # player = VideoPlayer('/home/jfeil/IDP/raw_data/Tennis/DJI_0170.MP4',
-    #                      '/home/jfeil/DroneTracking/Results/run_10/pose_tracks.csv',
-    #                      tracking=False)
+    # player = VideoPlayer('/home/jfeil/IDP/raw_data/Tennis/DJI_0084.MP4',
+    #                      '/home/jfeil/DroneTracking/Results_old/run_9/pose_tracks.csv',
+    #                      '/home/jfeil/DroneTracking/Results_old/run_9/player_tracks.csv',
+    #                      tracking=True)
+    player = VideoPlayer('/home/jfeil/IDP/raw_data/Tennis/DJI_0170.MP4',
+                         '/home/jfeil/DroneTracking/Results/run_1/pose_tracks.csv',
+                         '/home/jfeil/DroneTracking/Results/run_1/player_tracks.csv',
+                         tracking=True)
